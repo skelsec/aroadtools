@@ -21,7 +21,7 @@ pyinstaller -F auth.py %hiddenimports%
 cd %repo%\roadlib\dist & copy __main__.exe %root%\aroadtools-auth.exe
 cd %repo%\roadrecon\
 pyinstaller -F gather.py %hiddenimports%
-cd %repo%\roadrecon\dist & copy __main__.exe %root%\aroadtools-auth.exe
+cd %repo%\roadrecon\dist & copy __main__.exe %root%\aroadtools-gather.exe
 GOTO :CLEANUP
 
 
