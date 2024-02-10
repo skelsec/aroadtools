@@ -9,8 +9,7 @@ import warnings
 
 from aroadtools.roadlib.reqproxy import requestproxy
 import aroadtools.roadlib.database.metadef.database as database
-#from roadlib.metadef.database import Domain
-from roadtools.roadlib.auth import Authentication
+from aroadtools.roadlib.auth import Authentication
 from aroadtools.roadlib.database.metadef.database import (
     AdministrativeUnit, Application, ApplicationRef, AppRoleAssignment,
     AuthorizationPolicy, Contact, Device, DirectoryRole, DirectorySetting,
