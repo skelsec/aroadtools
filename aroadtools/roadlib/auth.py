@@ -10,7 +10,7 @@ import binascii
 import time
 import traceback
 import codecs
-from urllib.parse import urlparse, parse_qs, quote_plus
+from urllib.parse import urlparse, parse_qs, quote_plus, urlencode
 #from urllib3.util import SKIP_HEADER
 from xml.sax.saxutils import escape as xml_escape
 import xml.etree.ElementTree as ET
@@ -26,12 +26,10 @@ from aroadtools.roadlib.constants import WELLKNOWN_RESOURCES, WELLKNOWN_CLIENTS,
 #import adal
 import jwt
 from aroadtools.roadlib.reqproxy import requestproxy
+from aroadtools.roadlib.utils import printhook
 
 def get_data(data):
     return base64.urlsafe_b64decode(data+('='*(len(data)%4)))
-
-async def printhook(msg):
-    print(msg)
 
 class AuthenticationException(Exception):
     """
@@ -693,15 +691,15 @@ class Authentication():
         is how Chrome processes it, but it could probably also be obtained using the much
         simpler request from the get_srv_challenge function.
         """
-        ses = requests.session()
-        ses.proxies = self.proxies
-        ses.verify = self.verify
+        #ses = requests.session()
+        proxies = self.proxies
+        verify = self.verify
         if self.user_agent:
             headers = {'User-Agent': self.user_agent}
-            ses.headers = headers
+            #ses.headers = headers
         params = {
-            'resource': self.resource_uri,
-            'client_id': self.client_id,
+            'resource': str(self.resource_uri),
+            'client_id': str(self.client_id),
             'response_type': 'code',
             'haschrome': '1',
             'redirect_uri': 'https://login.microsoftonline.com/common/oauth2/nativeclient',
@@ -710,19 +708,23 @@ class Authentication():
             'x-client-Ver': '3.19.7.16602',
             'x-client-CPU': 'x64',
             'x-client-OS': 'Microsoft Windows NT 10.0.19569.0',
-            'site_id': 501358,
+            'site_id': '501358',
             'mscrid': str(uuid.uuid4())
         }
         headers = {
             'User-Agent': 'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 10.0; Win64; x64; Trident/7.0; .NET4.0C; .NET4.0E)',
             'UA-CPU': 'AMD64',
         }
-        res = ses.get('https://login.microsoftonline.com/Common/oauth2/authorize', params=params, headers=headers, allow_redirects=False)
+        base_url = 'https://login.microsoftonline.com/Common/oauth2/authorize/'
+        query_string = urlencode(params)
+        full_url = base_url + '?' + query_string
+        res, resdata = await self.requests_get(full_url, headers=headers, allow_redirects=False, restype='content')
+        #res = ses.get('https://login.microsoftonline.com/Common/oauth2/authorize', params=params, headers=headers, allow_redirects=False)
         if self.debug:
             with open('roadtools.debug.html','w') as outfile:
                 outfile.write(str(res.headers))
                 outfile.write('------\n\n\n-----')
-                outfile.write(res.content.decode('utf-8'))
+                outfile.write(resdata.decode('utf-8'))
         if res.status == 302 and res.headers['Location']:
             ups = urlparse(res.headers['Location'])
             qdata = parse_qs(ups.query)
@@ -732,13 +734,13 @@ class Authentication():
             return qdata['sso_nonce'][0]
         else:
             # Try to find SSO nonce in json config
-            startpos = res.content.find(b'$Config=')
-            stoppos = res.content.find(b'//]]></script>')
+            startpos = resdata.find(b'$Config=')
+            stoppos = resdata.find(b'//]]></script>')
             if startpos == -1 or stoppos == -1:
                 await self.print('No redirect or nonce config was returned!')
                 return
             else:
-                jsonbytes = res.content[startpos+8:stoppos-2]
+                jsonbytes = resdata[startpos+8:stoppos-2]
                 try:
                     jdata = json.loads(jsonbytes)
                 except json.decoder.JSONDecodeError:
@@ -806,15 +808,15 @@ class Authentication():
                 cookie = jwt.encode(jdata, sdata, algorithm='HS256', headers=newheaders)
                 await self.print('Re-signed PRT cookie using derived key')
 
-        ses = requests.session()
-        ses.proxies = self.proxies
-        ses.verify = self.verify
+        #ses = requests.session()
+        proxies = self.proxies
+        verify = self.verify
         if self.user_agent:
             headers = {'User-Agent': self.user_agent}
-            ses.headers = headers
+        
         authority_uri = self.get_authority_url()
         params = {
-            'client_id': self.client_id,
+            'client_id': str(self.client_id),
             'response_type': 'code',
             'haschrome': '1',
             'redirect_uri': 'https://login.microsoftonline.com/common/oauth2/nativeclient',
@@ -823,7 +825,7 @@ class Authentication():
             'x-client-Ver': '3.19.7.16602',
             'x-client-CPU': 'x64',
             'x-client-OS': 'Microsoft Windows NT 10.0.19569.0',
-            'site_id': 501358,
+            'site_id': '501358',
             'sso_nonce': nonce,
             'mscrid': str(uuid.uuid4())
         }
@@ -850,7 +852,9 @@ class Authentication():
         if redirurl:
             params['redirect_uri'] = redirurl
 
-        res = ses.get(url, params=params, headers=headers, cookies=cookies, allow_redirects=False)
+        full_url = url + '?' + urlencode(params)
+        res, resdata = await self.requests_get(full_url, headers=headers, cookies=cookies, allow_redirects=False, restype='content')
+        #res = ses.get(url, params=params, headers=headers, cookies=cookies, allow_redirects=False)
         if res.status == 302 and params['redirect_uri'].lower() in res.headers['Location'].lower():
             ups = urlparse(res.headers['Location'])
             qdata = parse_qs(ups.query)
@@ -868,13 +872,13 @@ class Authentication():
             with open('roadtools.debug.html','w') as outfile:
                 outfile.write(str(res.headers))
                 outfile.write('------\n\n\n-----')
-                outfile.write(res.content.decode('utf-8'))
+                outfile.write(resdata.decode('utf-8'))
 
         # Try to find SSO nonce in json config
-        startpos = res.content.find(b'$Config=')
-        stoppos = res.content.find(b'//]]></script>')
+        startpos = resdata.find(b'$Config=')
+        stoppos = resdata.find(b'//]]></script>')
         if startpos != -1 and stoppos != -1:
-            jsonbytes = res.content[startpos+8:stoppos-2]
+            jsonbytes = resdata[startpos+8:stoppos-2]
             try:
                 jdata = json.loads(jsonbytes)
                 try:
@@ -1140,7 +1144,7 @@ class Authentication():
         except KeyError:
             return useragent
 
-    async def requests_get(self, url, headers=None, data=None, restype = 'json', reqtype=None):
+    async def requests_get(self, url, headers=None, data=None, restype = 'json', reqtype=None, allow_redirects=True):
         '''
         Wrapper around requests.get to set all the options uniformly
         '''
@@ -1151,12 +1155,12 @@ class Authentication():
         #    headers['User-Agent'] = self.user_agent
         #    kwargs['headers'] = headers
         #return requests.get(*args, timeout=30.0, **kwargs)
-        response, resdata, err = await self.httpreq(url, 'GET', headers=headers, data=data, restype=restype, reqtype=reqtype, no_fetch=True)
+        response, resdata, err = await self.httpreq(url, 'GET', headers=headers, data=data, restype=restype, reqtype=reqtype, no_fetch=True, allow_redirects=allow_redirects)
         if err:
             raise err
         return response, resdata
 
-    async def requests_post(self, url, headers=None, data=None, restype = 'json', reqtype=None):
+    async def requests_post(self, url, headers=None, data=None, restype = 'json', reqtype=None, allow_redirects=True):
         '''
         Wrapper around requests.post to set all the options uniformly
         '''
@@ -1166,7 +1170,7 @@ class Authentication():
         #    headers = kwargs.get('headers',{})
         #    headers['User-Agent'] = self.user_agent
         #    kwargs['headers'] = headers
-        response, resdata, err = await self.httpreq(url, 'POST', headers=headers, data=data, restype=restype, reqtype=reqtype, no_fetch=True)
+        response, resdata, err = await self.httpreq(url, 'POST', headers=headers, data=data, restype=restype, reqtype=reqtype, no_fetch=True, allow_redirects=allow_redirects)
         if err:
             raise err
         return response, resdata

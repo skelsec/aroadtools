@@ -2,7 +2,7 @@ import json
 
 try:
     from pyodide.http import pyfetch
-    async def requestproxy(url, method, headers, data=None, restype='json', reqtype=None, no_fetch=False):
+    async def requestproxy(url, method, headers, data=None, restype='json', reqtype=None, no_fetch=False, allow_redirects=True, **kwargs):
         try:
             if reqtype == 'json':
                 data = json.dumps(data)
@@ -54,17 +54,17 @@ try:
         
 except ImportError:
     import aiohttp
-    async def requestproxy(url, method, headers, data=None, restype='json', reqtype=None, **kwargs):
+    async def requestproxy(url, method, headers, data=None, restype='json', reqtype=None, allow_redirects=True, cookies=None, **kwargs):
         try:
             method = method.upper()
             async with aiohttp.ClientSession() as session:
                 if method == 'GET':
-                    presponse = session.get(url, headers=headers, data=data)
+                    presponse = session.get(url, headers=headers, data=data, cookies=cookies, allow_redirects=allow_redirects)
                 elif method == 'POST':
                     if reqtype == 'json':
-                        presponse = session.post(url, headers=headers, json=data)
+                        presponse = session.post(url, headers=headers, json=data, cookies=cookies, allow_redirects=allow_redirects)
                     else:
-                        presponse = session.post(url, headers=headers, data=data)
+                        presponse = session.post(url, headers=headers, data=data, cookies=cookies, allow_redirects=allow_redirects)
                 else:
                     raise Exception('Method not supported')
                 async with presponse as response:

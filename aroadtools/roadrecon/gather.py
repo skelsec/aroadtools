@@ -8,6 +8,7 @@ import traceback
 import warnings
 
 from aroadtools.roadlib.reqproxy import requestproxy
+from aroadtools.roadlib.utils import printhook
 import aroadtools.roadlib.database.metadef.database as database
 from aroadtools.roadlib.auth import Authentication
 from aroadtools.roadlib.database.metadef.database import (
@@ -28,9 +29,6 @@ warnings.simplefilter('ignore')
 
 MAX_GROUPS = 3000
 MAX_REQ_PER_SEC = 600.0
-
-async def printhook(msg):
-    print(msg)
 
 async def queue_processor(queue):
     while True:
@@ -129,7 +127,7 @@ class DataDumper(object):
     
     async def checktoken(self):
         if time.time() > self.expiretime - 300:
-            auth = Authentication(self.httpreq)
+            auth = Authentication(httpreq=self.httpreq)
             try:
                 auth.client_id = self.token['_clientId']
             except KeyError:
@@ -185,6 +183,7 @@ class DataDumper(object):
                 return
             return objects
         except Exception as exc:
+            traceback.print_exc()
             await self.print(exc)
             return
     
@@ -195,6 +194,7 @@ class DataDumper(object):
             await self.ratelimit()
             try:
                 self.urlcounter += 1
+
                 req, objects, err = await self.httpreq(nexturl, 'GET', self.headers, restype='json')
                 if err is not None:
                     await self.print('Error during request: %s' % err)
@@ -224,6 +224,7 @@ class DataDumper(object):
                     # print(objects)
                     pass
             except Exception as exc:
+                traceback.print_exc()
                 await self.print(exc)
                 return
 
@@ -266,7 +267,7 @@ class DataDumper(object):
                 i = 0
         if str(parent.__table__) == 'Groups':
             self.groupcounter += 1
-            await self.print('Done processing {0}/{1} groups'.format(int(self.groupcounter/2), self.totalgroups), end='\r')
+            await self.print('Done processing {0}/{1} groups'.format(int(self.groupcounter/2), self.totalgroups))
 
     async def dump_l_to_linktable(self, url, method, mapping, parentid, objecttype):
         i = 0
@@ -292,10 +293,10 @@ class DataDumper(object):
         self.commitlink(cache)
         if str(objecttype) == 'groups':
             self.groupcounter += 1
-            await self.print('Done processing {0}/{1} groups {2}/{3} devices'.format(int(self.groupcounter/2), self.totalgroups, self.devicecounter, self.totaldevices), end='\r')
+            await self.print('Done processing {0}/{1} groups {2}/{3} devices'.format(int(self.groupcounter/2), self.totalgroups, self.devicecounter, self.totaldevices))
         if str(objecttype) == 'devices':
             self.devicecounter += 1
-            await self.print('Done processing {0}/{1} groups {2}/{3} devices'.format(int(self.groupcounter/2), self.totalgroups, self.devicecounter, self.totaldevices), end='\r')
+            await self.print('Done processing {0}/{1} groups {2}/{3} devices'.format(int(self.groupcounter/2), self.totalgroups, self.devicecounter, self.totaldevices))
 
     async def dump_links(self, objecttype, linktype, parenttbl, mapping=None, linkname=None, childtbl=None, method=None):
         parents = self.session.query(parenttbl).all()
@@ -486,7 +487,7 @@ class DataDumper(object):
             'Authorization': '%s %s' % (self.token['tokenType'], self.token['accessToken'])
         }
         
-        auth = Authentication(self.httpreq)
+        auth = Authentication(httpreq = self.httpreq)
         if self.user_agent is not None:
             self.headers['User-Agent'] = self.user_agent
             auth.set_user_agent(self.user_agent)
