@@ -8,6 +8,7 @@ import random
 import string
 import codecs
 import jwt
+import ssl
 import os
 import time
 import warnings
@@ -23,7 +24,7 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.utils import CryptographyDeprecationWarning
 from aroadtools.roadlib.auth import Authentication, get_data, AuthenticationException
-from aroadtools.roadlib.reqproxy import requestproxy
+import httpx
 
 warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning)
 
@@ -33,8 +34,9 @@ class DeviceAuthentication():
     Device authentication for ROADtools. Handles device registration,
     PRT request/renew and token request using WAM emulation.
     """
-    def __init__(self, httpreq = requestproxy):
-        self.httpreq = httpreq
+    def __init__(self, httptransport=None, httpauth = None):
+        self.httptransport = httptransport
+        self.httpauth = httpauth
         # Cryptography certificate object
         self.certificate = None
         # Cryptography private key object
@@ -263,7 +265,11 @@ class DeviceAuthentication():
         data = {
             "kngc": pubkeycngblob.decode('utf-8')
         }
-        res, resdata = await self.httpreq('https://enterpriseregistration.windows.net/EnrollmentServer/key/?api-version=1.0', 'POST', headers=headers, data=data, restype='json', reqtype='json')
+
+        async with httpx.AsyncClient(transport=self.httptransport, auth = self.httpauth) as session:
+            res = await session.post('https://enterpriseregistration.windows.net/EnrollmentServer/key/?api-version=1.0', headers=headers, json=data)
+            resdata = res.json()
+        
         return resdata
 
     def create_pubkey_blob_from_key(self, key):
@@ -412,18 +418,21 @@ class DeviceAuthentication():
         }
 
         print('Registering device')
-        res, returndata = await self.httpreq('https://enterpriseregistration.windows.net/EnrollmentServer/device/?api-version=2.0', 'POST', headers=headers, data=data, restype='json', reqtype='json')
-        if not 'Certificate' in returndata:
-            print('Error registering device! Got response:')
-            pprint.pprint(returndata)
-            return False
-        cert = x509.load_der_x509_certificate(base64.b64decode(returndata['Certificate']['RawBody']))
-        # There is only one, so print it
-        for attribute in cert.subject:
-            print(f"Device ID: {attribute.value}")
-        with open(certout, "wb") as certf:
-            certf.write(cert.public_bytes(serialization.Encoding.PEM))
-        print(f'Saved device certificate to {certout}')
+        async with httpx.AsyncClient(transport=self.httptransport, auth = self.httpauth) as session:
+            res = await session.post('https://enterpriseregistration.windows.net/EnrollmentServer/device/?api-version=2.0', headers=headers, json=data)
+            returndata = res.json()
+
+            if not 'Certificate' in returndata:
+                print('Error registering device! Got response:')
+                pprint.pprint(returndata)
+                return False
+            cert = x509.load_der_x509_certificate(base64.b64decode(returndata['Certificate']['RawBody']))
+            # There is only one, so print it
+            for attribute in cert.subject:
+                print(f"Device ID: {attribute.value}")
+            with open(certout, "wb") as certf:
+                certf.write(cert.public_bytes(serialization.Encoding.PEM))
+            print(f'Saved device certificate to {certout}')
         return True
 
     async def register_hybrid_device(self, objectsid, tenantid, certout=None, privout=None, device_type=None, device_name=None, os_version=None):
@@ -514,18 +523,22 @@ class DeviceAuthentication():
             deviceid = attr.value
         print(f"Device ID (from certificate): {deviceid}")
         print('Registering device')
-        res, returndata = await self.httpreq(f'https://enterpriseregistration.windows.net/EnrollmentServer/device/{deviceid}?api-version=2.0', 'PUT', headers=headers, data=data, restype='json', reqtype='json')
-        if not 'Certificate' in returndata:
-            print('Error registering device! Got response:')
-            pprint.pprint(returndata)
-            return False
-        cert = x509.load_der_x509_certificate(base64.b64decode(returndata['Certificate']['RawBody']))
-        # There is only one, so print it
-        for attribute in cert.subject:
-            print(f"AAD device ID: {attribute.value}")
-        with open(certout, "wb") as certf:
-            certf.write(cert.public_bytes(serialization.Encoding.PEM))
-        print(f'Saved device certificate to {certout}')
+
+        async with httpx.AsyncClient(transport=self.httptransport, auth = self.httpauth) as session:
+            res = await session.post(f'https://enterpriseregistration.windows.net/EnrollmentServer/device/{deviceid}?api-version=2.0', headers=headers, json=data)
+            returndata = res.json()
+
+            if not 'Certificate' in returndata:
+                print('Error registering device! Got response:')
+                pprint.pprint(returndata)
+                return False
+            cert = x509.load_der_x509_certificate(base64.b64decode(returndata['Certificate']['RawBody']))
+            # There is only one, so print it
+            for attribute in cert.subject:
+                print(f"AAD device ID: {attribute.value}")
+            with open(certout, "wb") as certf:
+                certf.write(cert.public_bytes(serialization.Encoding.PEM))
+            print(f'Saved device certificate to {certout}')
         return True
 
     async def delete_device(self, certpath, keypath):
@@ -538,12 +551,26 @@ class DeviceAuthentication():
             deviceid = attribute.value
         if not deviceid:
             return
-        res, resdata = await self.httpreq(f'https://enterpriseregistration.windows.net/EnrollmentServer/device/{deviceid}?', 'DELETE', cert=(certpath, keypath), restype='text')
-        if res.status != 200:
-            print('Error deleting device:')
-            print(resdata)
-            return False
-        print('Device was deleted in Azure AD')
+        
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.load_cert_chain(certpath, keypath)
+        
+        newtransport = None
+        verify = ssl_ctx
+        if self.httptransport is not None:
+            newtransport = self.httptransport.create_new(ssl_context=ssl_ctx)
+            verify = None
+        
+        
+        async with httpx.AsyncClient(transport=newtransport, auth = self.httpauth, verify = verify, follow_redirects=True) as session:
+            res = await session.delete(f'https://enterpriseregistration.windows.net/EnrollmentServer/device/{deviceid}?')
+            resdata = res.text()
+
+            if res.status_code != 200:
+                print('Error deleting device:')
+                print(resdata)
+                return False
+            print('Device was deleted in Azure AD')
         return True
 
     async def request_token_with_devicecert_signed_payload(self, payload):
@@ -564,23 +591,29 @@ class DeviceAuthentication():
             'client_info':'1',
             'tgt':True
         }
-        res, prtdata = await self.httpreq('https://login.microsoftonline.com/common/oauth2/token', 'POST', data=prt_request_data, restype='json')
-        if res.status != 200:
-            raise AuthenticationException(res.text)
-        # Encrypted session key that we need to unwrap
-        sessionkey_jwe = prtdata['session_key_jwe']
-        uwk = self.decrypt_jwe_with_transport_key(sessionkey_jwe)
 
-        prtdata['session_key'] = binascii.hexlify(uwk).decode('utf-8')
-        # Decrypt Kerberos keys
-        authlib = Authentication()
-        for tgt in ['tgt_ad', 'tgt_cloud']:
-            if tgt in prtdata:
-                tgtdata = json.loads(prtdata[tgt])
-                if tgtdata['keyType'] != 0:
-                    # There is a key
-                    tgt_sessionkey = authlib.decrypt_auth_response(tgtdata['clientKey'], uwk)
-                    prtdata[tgt + '_sessionkey'] = binascii.hexlify(tgt_sessionkey).decode('utf-8')
+        prtdata = None
+        async with httpx.AsyncClient(transport=self.httptransport, auth = self.httpauth) as session:
+            res = await session.post('https://login.microsoftonline.com/common/oauth2/token', data=prt_request_data)
+            if res.status_code != 200:
+                errmsg = res.text()
+                raise AuthenticationException(errmsg)
+                
+            prtdata = res.json()
+            # Encrypted session key that we need to unwrap
+            sessionkey_jwe = prtdata['session_key_jwe']
+            uwk = self.decrypt_jwe_with_transport_key(sessionkey_jwe)
+
+            prtdata['session_key'] = binascii.hexlify(uwk).decode('utf-8')
+            # Decrypt Kerberos keys
+            authlib = Authentication()
+            for tgt in ['tgt_ad', 'tgt_cloud']:
+                if tgt in prtdata:
+                    tgtdata = json.loads(prtdata[tgt])
+                    if tgtdata['keyType'] != 0:
+                        # There is a key
+                        tgt_sessionkey = authlib.decrypt_auth_response(tgtdata['clientKey'], uwk)
+                        prtdata[tgt + '_sessionkey'] = binascii.hexlify(tgt_sessionkey).decode('utf-8')
 
         return prtdata
 
@@ -625,10 +658,15 @@ class DeviceAuthentication():
         }
         if reqtgt:
             token_request_data['tgt'] = True
-        res, responsedata = await self.httpreq('https://login.microsoftonline.com/common/oauth2/token', 'POST', data=token_request_data, restype='text')
-        if res.status != 200:
-            raise AuthenticationException(res.text)
-        return responsedata
+        
+        async with httpx.AsyncClient(transport=self.httptransport, auth = self.httpauth) as session:
+            res = await session.post('https://login.microsoftonline.com/common/oauth2/token', data=token_request_data)
+            responsedata = res.text()
+            if res.status_code != 200:
+                raise AuthenticationException(responsedata)
+               
+            return responsedata
+        return None
 
     async def get_prt_with_password(self, username, password):
         authlib = Authentication()

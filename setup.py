@@ -50,7 +50,7 @@ setup(
 		'cryptography',
 		'sqlalchemy',
         'jwt',
-        'aiohttp',
+        'httpx',
 	],
 	entry_points={
 		'console_scripts': [

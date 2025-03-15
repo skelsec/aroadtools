@@ -6,8 +6,8 @@ import sys
 import time
 import traceback
 import warnings
+import httpx
 
-from aroadtools.roadlib.reqproxy import requestproxy
 from aroadtools.roadlib.utils import printhook
 import aroadtools.roadlib.database.metadef.database as database
 from aroadtools.roadlib.auth import Authentication
@@ -38,7 +38,7 @@ async def queue_processor(queue):
         queue.task_done()
 
 class DataDumper(object):
-    def __init__(self, token, tenantid = None, api_version = '1.61-internal', engine=None, session=None, dburl = None, skip_first_phase=False, mfa=False, user_agent=None, httpreq=requestproxy, printhook=printhook):
+    def __init__(self, token, tenantid = None, api_version = '1.61-internal', engine=None, session=None, dburl = None, skip_first_phase=False, mfa=False, user_agent=None, httptransport=None, httpauth=None, printhook=printhook):
         self.api_version = api_version
         self.tenantid = tenantid
         self.session = session
@@ -57,7 +57,8 @@ class DataDumper(object):
         self.user_agent = user_agent
         self.dburl = dburl
         self.setup_complete = False
-        self.httpreq = httpreq
+        self.httptransport = httptransport
+        self.httpauth = httpauth
         self.print = printhook
 
     @staticmethod
@@ -127,7 +128,7 @@ class DataDumper(object):
     
     async def checktoken(self):
         if time.time() > self.expiretime - 300:
-            auth = Authentication(httpreq=self.httpreq)
+            auth = Authentication(httptransport=self.httptransport, httpauth=self.httpauth)
             try:
                 auth.client_id = self.token['_clientId']
             except KeyError:
@@ -165,23 +166,26 @@ class DataDumper(object):
         await self.ratelimit()
         try:
             self.urlcounter += 1
-            res, objects, err = await self.httpreq(url, 'GET', self.headers, restype='json')
-            if res.status == 429:
-                if self.tokencounter > 0:
-                    self.tokencounter -= 10*MAX_REQ_PER_SEC
-                    await self.print('Sleeping because of rate-limit hit')
-                obj = await self.dumpsingle(url, method)
-                return obj
-            if res.status != 200:
-                # This can happen
-                if res.status == 404 and 'applicationRefs' in url:
+
+            async with httpx.AsyncClient(transport=self.httptransport, auth = self.httpauth) as session:
+                res = await session.get(url, headers=self.headers)
+                objects = res.json()
+                if res.status_code == 429:
+                    if self.tokencounter > 0:
+                        self.tokencounter -= 10*MAX_REQ_PER_SEC
+                        await self.print('Sleeping because of rate-limit hit')
+                    return await self.dumpsingle(url, method)
+                if res.status_code != 200:
+                    # This can happen
+                    if res.status_code == 404 and 'applicationRefs' in url:
+                        return
+                    # Ignore default users role not being found
+                    if res.status_code == 404 and 'a0b1b346-4d3e-4e8b-98f8-753987be4970' in url:
+                        return
+                    await self.print('Error %d for URL %s' % (res.status_code, url))
                     return
-                # Ignore default users role not being found
-                if res.status == 404 and 'a0b1b346-4d3e-4e8b-98f8-753987be4970' in url:
-                    return
-                await self.print('Error %d for URL %s' % (res.status, url))
-                return
-            return objects
+                return objects
+            
         except Exception as exc:
             traceback.print_exc()
             await self.print(exc)
@@ -195,34 +199,31 @@ class DataDumper(object):
             try:
                 self.urlcounter += 1
 
-                req, objects, err = await self.httpreq(nexturl, 'GET', self.headers, restype='json')
-                if err is not None:
-                    await self.print('Error during request: %s' % err)
-                    return
-                # Hold off when rate limit is reached
-                if req.status == 429:
-                    if self.tokencounter > 0:
-                        self.tokencounter -= 10*MAX_REQ_PER_SEC
-                        await self.print('Sleeping because of rate-limit hit')
-                    continue
-                if req.status != 200:
-                    # Ignore default users role not being found
-                    if req.status == 404 and 'a0b1b346-4d3e-4e8b-98f8-753987be4970' in url:
+                async with httpx.AsyncClient(transport=self.httptransport, auth = self.httpauth) as session:
+                    req = await session.get(nexturl, headers=self.headers)
+                    objects = req.json()
+                    if req.status_code == 429:
+                        if self.tokencounter > 0:
+                            self.tokencounter -= 10*MAX_REQ_PER_SEC
+                            await self.print('Sleeping because of rate-limit hit')
+                        continue
+                    if req.status_code != 200:
+                        # Ignore default users role not being found
+                        if req.status_code == 404 and 'a0b1b346-4d3e-4e8b-98f8-753987be4970' in url:
+                            return
+                        await self.print('Error %d for URL %s' % (req.status_code, nexturl))
                         return
-                    await self.print('Error %d for URL %s' % (req.status, nexturl))
-                    # print(await req.text())
-                    # print(req.headers)
-                    await self.print('')
-                try:
-                    nexturl = DataDumper.mknext(objects['odata.nextLink'], url)
-                except KeyError:
-                    nexturl = None
-                try:
-                    for robject in objects['value']:
-                        yield robject
-                except KeyError:
-                    # print(objects)
-                    pass
+                    try:
+                        nexturl = DataDumper.mknext(objects['odata.nextLink'], url)
+                    except KeyError:
+                        nexturl = None
+                    try:
+                        for robject in objects['value']:
+                            yield robject
+                    except KeyError:
+                        # print(objects)
+                        pass
+                    
             except Exception as exc:
                 traceback.print_exc()
                 await self.print(exc)
@@ -487,7 +488,7 @@ class DataDumper(object):
             'Authorization': '%s %s' % (self.token['tokenType'], self.token['accessToken'])
         }
         
-        auth = Authentication(httpreq = self.httpreq)
+        auth = Authentication(httptransport = self.httptransport, httpauth=self.httpauth)
         if self.user_agent is not None:
             self.headers['User-Agent'] = self.user_agent
             auth.set_user_agent(self.user_agent)

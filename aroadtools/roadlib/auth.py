@@ -8,7 +8,7 @@ import uuid
 import asyncio
 import binascii
 import time
-import traceback
+import httpx
 import codecs
 from urllib.parse import urlparse, parse_qs, quote_plus, urlencode
 #from urllib3.util import SKIP_HEADER
@@ -25,7 +25,6 @@ from aroadtools.roadlib.constants import WELLKNOWN_RESOURCES, WELLKNOWN_CLIENTS,
     DSSO_BODY_KERBEROS, DSSO_BODY_USERPASS
 #import adal
 import jwt
-from aroadtools.roadlib.reqproxy import requestproxy
 from aroadtools.roadlib.utils import printhook
 
 def get_data(data):
@@ -41,7 +40,7 @@ class Authentication():
     """
     Authentication class for ROADtools
     """
-    def __init__(self, username=None, password=None, tenant=None, client_id='1b730954-1685-4b74-9bfd-dac224a7b894', httpreq=requestproxy, printhook=printhook):
+    def __init__(self, username=None, password=None, tenant=None, client_id='1b730954-1685-4b74-9bfd-dac224a7b894', httptransport=None, httpauth = None, printhook=printhook):
         self.username = username
         self.password = password
         self.tenant = tenant
@@ -58,7 +57,8 @@ class Authentication():
         self.debug = False
         self.scope = None
         self.user_agent = None
-        self.httpreq = httpreq
+        self.httptransport = httptransport
+        self.httpauth = httpauth
         self.print=printhook
 
     def get_authority_url(self, default_tenant='common'):
@@ -145,7 +145,7 @@ class Authentication():
             data = {**data, **additionaldata}
         await self.print(data)
         res, tokenreply = await self.requests_post(f"{authority_uri}/oauth2/token", data=data, restype='json')
-        if res.status != 200:
+        if res.status_code != 200:
             raise AuthenticationException(tokenreply)
         if returnreply:
             return tokenreply
@@ -172,7 +172,7 @@ class Authentication():
             data = {**data, **additionaldata}
         await self.print(data)
         res, tokenreply = await self.requests_post(f"{authority_uri}/oauth2/v2.0/token", data=data, restype='json')
-        if res.status != 200:
+        if res.status_code != 200:
             raise AuthenticationException(tokenreply)
         if returnreply:
             return tokenreply
@@ -235,7 +235,7 @@ class Authentication():
         if additionaldata:
             data = {**data, **additionaldata}
         res, tokenreply = await self.requests_post(f"{authority_uri}/oauth2/token", data=data, restype='json')
-        if res.status != 200:
+        if res.status_code != 200:
             raise AuthenticationException(res.text)
         if returnreply:
             return tokenreply
@@ -262,7 +262,7 @@ class Authentication():
         if additionaldata:
             data = {**data, **additionaldata}
         res, tokenreply = await self.requests_post(f"{authority_uri}/oauth2/v2.0/token", data=data, restype='json')
-        if res.status != 200:
+        if res.status_code != 200:
             raise AuthenticationException(res.text)
         if returnreply:
             return tokenreply
@@ -289,7 +289,7 @@ class Authentication():
         if pkce_secret:
             raise NotImplementedError
         res, tokenreply = await self.requests_post(f"{authority_uri}/oauth2/token", data=data, restype='json')
-        if res.status != 200:
+        if res.status_code != 200:
             raise AuthenticationException(res.text)
         if returnreply:
             return tokenreply
@@ -317,7 +317,7 @@ class Authentication():
         if pkce_secret:
             raise NotImplementedError
         res, tokenreply = await self.requests_post(f"{authority_uri}/oauth2/v2.0/token", data=data, restype='json')
-        if res.status != 200:
+        if res.status_code != 200:
             raise AuthenticationException(res.text)
         if returnreply:
             return tokenreply
@@ -339,7 +339,7 @@ class Authentication():
             "windows_api_version":"2.0"
         }
         res, prtdata = await self.requests_post(f"{authority_uri}/oauth2/token", data=data, restype='text')
-        if res.status != 200:
+        if res.status_code != 200:
             raise AuthenticationException(res.text)
         data = self.decrypt_auth_response(prtdata, sessionkey, asjson=True)
         return data
@@ -359,7 +359,7 @@ class Authentication():
         if additionaldata:
             data = {**data, **additionaldata}
         res, tokenreply = await self.requests_post(f"{authority_uri}/oauth2/token", data=data, restype='json')
-        if res.status != 200:
+        if res.status_code != 200:
             raise AuthenticationException(res.text)
         if returnreply:
             return tokenreply
@@ -382,7 +382,7 @@ class Authentication():
         if additionaldata:
             data = {**data, **additionaldata}
         res, tokenreply = await self.requests_post(f"{authority_uri}/oauth2/v2.0/token", data=data, restype='json')
-        if res.status != 200:
+        if res.status_code != 200:
             raise AuthenticationException(res.text)
         if returnreply:
             return tokenreply
@@ -456,7 +456,7 @@ class Authentication():
         if additionaldata:
             data = {**data, **additionaldata}
         res = await self.requests_post(f"{authority_uri}/oauth2/token", headers=headers, data=data)
-        if res.status != 200:
+        if res.status_code != 200:
             raise AuthenticationException(res.text)
         tokenreply = res.json()
         if returnreply:
@@ -718,8 +718,8 @@ class Authentication():
         base_url = 'https://login.microsoftonline.com/Common/oauth2/authorize/'
         query_string = urlencode(params)
         full_url = base_url + '?' + query_string
-        res, resdata = await self.requests_get(full_url, headers=headers, allow_redirects=False, restype='content')
-        #res = ses.get('https://login.microsoftonline.com/Common/oauth2/authorize', params=params, headers=headers, allow_redirects=False)
+        res, resdata = await self.requests_get(full_url, headers=headers, follow_redirects=False, restype='content')
+        #res = ses.get('https://login.microsoftonline.com/Common/oauth2/authorize', params=params, headers=headers, follow_redirects=False)
         if self.debug:
             with open('roadtools.debug.html','w') as outfile:
                 outfile.write(str(res.headers))
@@ -853,8 +853,8 @@ class Authentication():
             params['redirect_uri'] = redirurl
 
         full_url = url + '?' + urlencode(params)
-        res, resdata = await self.requests_get(full_url, headers=headers, cookies=cookies, allow_redirects=False, restype='content')
-        #res = ses.get(url, params=params, headers=headers, cookies=cookies, allow_redirects=False)
+        res, resdata = await self.requests_get(full_url, headers=headers, cookies=cookies, follow_redirects=False, restype='content')
+        #res = ses.get(url, params=params, headers=headers, cookies=cookies, follow_redirects=False)
         if res.status == 302 and params['redirect_uri'].lower() in res.headers['Location'].lower():
             ups = urlparse(res.headers['Location'])
             qdata = parse_qs(ups.query)
@@ -1144,7 +1144,7 @@ class Authentication():
         except KeyError:
             return useragent
 
-    async def requests_get(self, url, headers=None, data=None, restype = 'json', reqtype=None, allow_redirects=True):
+    async def requests_get(self, url, headers=None, data=None, restype = 'json', reqtype=None, follow_redirects=True):
         '''
         Wrapper around requests.get to set all the options uniformly
         '''
@@ -1155,12 +1155,22 @@ class Authentication():
         #    headers['User-Agent'] = self.user_agent
         #    kwargs['headers'] = headers
         #return requests.get(*args, timeout=30.0, **kwargs)
-        response, resdata, err = await self.httpreq(url, 'GET', headers=headers, data=data, restype=restype, reqtype=reqtype, no_fetch=True, allow_redirects=allow_redirects)
-        if err:
-            raise err
+
+        async with httpx.AsyncClient(transport=self.httptransport, auth = self.httpauth) as session:
+            response = await session.get(url, headers=headers, data=data, follow_redirects=follow_redirects)
+            if restype == 'json':
+                resdata = await response.json()
+            elif restype == 'content':
+                resdata = await response.read()
+            elif restype == 'text':
+                resdata = await response.text()
+            else:
+                resdata = await response.text()
+        print(resdata)
+        
         return response, resdata
 
-    async def requests_post(self, url, headers=None, data=None, restype = 'json', reqtype=None, allow_redirects=True):
+    async def requests_post(self, url, headers=None, data=None, restype = 'json', reqtype=None, follow_redirects=True):
         '''
         Wrapper around requests.post to set all the options uniformly
         '''
@@ -1170,11 +1180,32 @@ class Authentication():
         #    headers = kwargs.get('headers',{})
         #    headers['User-Agent'] = self.user_agent
         #    kwargs['headers'] = headers
-        response, resdata, err = await self.httpreq(url, 'POST', headers=headers, data=data, restype=restype, reqtype=reqtype, no_fetch=True, allow_redirects=allow_redirects)
-        if err:
-            raise err
-        return response, resdata
         #return requests.post(*args, timeout=30.0, **kwargs)
+
+        async with httpx.AsyncClient(transport=self.httptransport, auth = self.httpauth, follow_redirects=follow_redirects) as session:
+            if reqtype == 'json':
+                response = await session.post(url, headers=headers, data=data)
+                if restype == 'json':
+                    resdata = response.json()
+                elif restype == 'content':
+                    resdata = response.read()
+                elif restype == 'text':
+                    resdata = response.text()
+                else:
+                    resdata = response.text()
+
+            else:
+                response = await session.post(url, headers=headers, data=data)
+                if restype == 'json':
+                    resdata = response.json()
+                elif restype == 'content':
+                    resdata = response.content()
+                elif restype == 'text':
+                    resdata = response.text()
+                else:
+                    resdata = response.text()
+
+        return response, resdata
 
     def parse_args(self, args):
         self.username = args.username
@@ -1269,6 +1300,7 @@ class Authentication():
         #        await self.print(str(ex))
         #    sys.exit(1)
         except AuthenticationException as ex:
+            print(ex)
             try:
                 error_data = json.loads(str(ex))
                 await self.print(f"Error during authentication: {error_data['error_description']}")
@@ -1299,6 +1331,7 @@ async def amain():
     args = parser.parse_args()
     auth.parse_args(args)
     res = await auth.get_tokens(args)
+    print(res)
     if not res:
         return
     await auth.save_tokens(args)
